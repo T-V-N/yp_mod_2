@@ -1,8 +1,9 @@
 use crate::quote::StockQuote;
-use rand::{Rng, RngExt};
+use crossbeam::channel::{Sender, unbounded};
+use rand::RngExt;
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::vec;
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct QuoteGenerator {
     quotes: HashMap<String, StockQuote>,
@@ -11,7 +12,7 @@ pub struct QuoteGenerator {
 }
 
 #[derive(Debug)]
-enum QuoteGeneratorError {
+pub enum QuoteGeneratorError {
     InvalidTicker,
 }
 
@@ -38,9 +39,7 @@ impl QuoteGenerator {
 
     pub fn generate_quote(ticker: &str, last_price: f64, deviation_pt: u8) -> StockQuote {
         let volume = match ticker {
-            // Популярные акции имеют больший объём
             "AAPL" | "MSFT" | "TSLA" => 1000 + (rand::random::<f64>() * 5000.0) as u32,
-            // Обычные акции - средний объём
             _ => 100 + (rand::random::<f64>() * 1000.0) as u32,
         };
 
@@ -86,6 +85,20 @@ impl QuoteGenerator {
         let deviation = curent_price * deviation_pt as f64 / 100.0;
 
         curent_price + rng.random_range(-deviation..deviation)
+    }
+
+    pub fn stream_all_quotes(mut self, cooldown_ms: u64, s: Sender<Vec<StockQuote>>) {
+        thread::spawn(move || {
+            loop {
+                let mut keys: Vec<String> = self.quotes.keys().cloned().collect();
+                keys.sort();
+                let tickers: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
+                if let Ok(quotes) = self.get_quotes(tickers) {
+                    let _ = s.send(quotes);
+                }
+                thread::sleep(Duration::from_millis(cooldown_ms));
+            }
+        });
     }
 }
 
@@ -136,5 +149,23 @@ mod tests {
             Duration::from_millis(1000).as_millis() as u64,
         );
         assert!(generator.get_quotes(vec!["INVALID"]).is_err());
+    }
+
+    #[test]
+    fn test_stream_quotes() {
+        let (s, r) = unbounded();
+
+        let mut generator = QuoteGenerator::new(
+            vec!["AAPL", "GOOG"],
+            5,
+            Duration::from_millis(1000).as_millis() as u64,
+        );
+
+        generator.stream_all_quotes(1000, s);
+
+        let quotes = r.recv().unwrap();
+        assert_eq!(quotes.len(), 2);
+        assert_eq!(quotes[0].ticker, "AAPL");
+        assert_eq!(quotes[1].ticker, "GOOG");
     }
 }
