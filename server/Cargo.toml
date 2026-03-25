@@ -1,0 +1,19 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+
+[dependencies]
+clap.workspace = true 
+crossbeam.workspace = true
+rand.workspace = true
+ctrlc.workspace = true
+shared = { path = "../shared" }
+serde.workspace = true
+bincode.workspace = true
+env_logger.workspace = true
+log.workspace = true
+
+[features]
+status_panel = []
