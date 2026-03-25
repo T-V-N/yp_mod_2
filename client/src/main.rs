@@ -89,15 +89,26 @@ fn main() -> io::Result<()> {
     let (tx_receive, rx_receive) = unbounded();
     let (tx_ping, rx_ping) = unbounded();
     let receiver = QuotesReceiver::new(&args.udp_uri, &args.udp_port)?;
-    ctrlc::set_handler(move || {
+    if let Err(e) = ctrlc::set_handler(move || {
         log::info!("Stopping client...");
         tx_receive.send(true).unwrap();
         tx_ping.send(true).unwrap();
-    })
-    .expect("Error setting Ctrl-C handler");
-
-    if let Err(e) = receiver.run(args.ping_delay, w, rx_ping, rx_receive) {
-        return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
+    }) {
+        log::error!("Error setting Ctrl-C handler: {}", e);
     }
+
+    if let Ok((ping_handle, receive_handle)) = receiver.run(args.ping_delay, w, rx_ping, rx_receive)
+    {
+        log::info!("Client started");
+        ping_handle.join().unwrap();
+        receive_handle.join().unwrap();
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Error starting client",
+        ));
+    }
+
+    log::info!("Client stopped");
     Ok(())
 }

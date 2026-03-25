@@ -3,6 +3,7 @@ use shared::StockQuote;
 use std::io::{ErrorKind, Write};
 use std::net::UdpSocket;
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub struct QuotesReceiver {
@@ -32,6 +33,7 @@ impl QuotesReceiver {
                 Ok(false) | Err(TryRecvError::Empty) => {}
                 Ok(true) | Err(TryRecvError::Disconnected) => {
                     log::info!("quotes receiver: stopping udp receiver");
+                    self.socket.send(b"EXIT")?;
                     return Ok(());
                 }
             }
@@ -67,7 +69,7 @@ impl QuotesReceiver {
         out: W,
         rx_ping: Receiver<bool>,
         rx_receive: Receiver<bool>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(JoinHandle<()>, JoinHandle<()>), Box<dyn std::error::Error>> {
         let ping_socket = self.socket.try_clone()?;
 
         let ping_handle = thread::spawn(move || {
@@ -76,13 +78,13 @@ impl QuotesReceiver {
             }
         });
 
-        if let Err(e) = self.receive_loop(rx_receive, out) {
-            log::error!("receiver loop error: {}", e);
-        }
+        let receive_handle = thread::spawn(move || {
+            if let Err(e) = self.receive_loop(rx_receive, out) {
+                log::error!("receiver loop error: {}", e);
+            }
+        });
 
-        ping_handle.join().expect("Error joining ping thread");
-
-        Ok(())
+        Ok((ping_handle, receive_handle))
     }
 }
 

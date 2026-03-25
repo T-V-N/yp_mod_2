@@ -1,8 +1,7 @@
 use shared::StockQuote;
 
 use crate::Command;
-use crossbeam::channel::Receiver;
-use crossbeam::channel::Sender;
+use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use rand::RngExt;
 use std::collections::HashMap;
 use std::thread;
@@ -102,7 +101,9 @@ impl QuoteGenerator {
             loop {
                 match cmd_receiver.try_recv() {
                     Ok(Command::StopSendingAll) => break,
-                    _ => {}
+                    Ok(_) => {}
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => break,
                 }
                 let mut keys: Vec<String> = self.quotes.keys().cloned().collect();
                 keys.sort();
@@ -180,7 +181,7 @@ mod tests {
     #[test]
     fn test_stream_quotes() {
         let (s, r) = unbounded();
-        let (_, cr) = unbounded();
+        let (_cmd_tx, cr) = unbounded();
 
         let generator = QuoteGenerator::new(
             vec!["AAPL", "GOOG"],

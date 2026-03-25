@@ -250,7 +250,10 @@ fn handle_client(client_r: Receiver<ClientStreamMessage>, addr: SocketAddr, sock
                         log::error!("quotes sender: bincode serialize for {addr} failed: {e}");
                     }
                 },
-                ClientStreamMessage::Stop => return,
+                ClientStreamMessage::Stop => {
+                    log::info!("handle_client: received Stop message for {addr}, exiting");
+                    return;
+                }
             }
         } else {
             log::error!("handle_client: channel disconnected for {addr}, exiting");
