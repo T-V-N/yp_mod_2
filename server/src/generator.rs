@@ -1,8 +1,12 @@
-use crate::quote::StockQuote;
-use crossbeam::channel::{Sender, unbounded};
+use shared::StockQuote;
+
+use crate::Command;
+use crossbeam::channel::Receiver;
+use crossbeam::channel::Sender;
 use rand::RngExt;
 use std::collections::HashMap;
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct QuoteGenerator {
@@ -47,11 +51,15 @@ impl QuoteGenerator {
             ticker: ticker.to_string(),
             price: QuoteGenerator::next_tick_price(last_price, deviation_pt),
             volume,
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+            timestamp: Self::now_millis(),
         }
+    }
+
+    fn now_millis() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
     }
 
     pub fn get_quotes(
@@ -59,10 +67,7 @@ impl QuoteGenerator {
         tickers: Vec<&str>,
     ) -> Result<Vec<StockQuote>, QuoteGeneratorError> {
         let mut result = Vec::new();
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let current_time = Self::now_millis();
 
         for ticker in tickers {
             let quote = self
@@ -80,31 +85,52 @@ impl QuoteGenerator {
         Ok(result)
     }
 
-    fn next_tick_price(curent_price: f64, deviation_pt: u8) -> f64 {
+    fn next_tick_price(current_price: f64, deviation_pt: u8) -> f64 {
         let mut rng = rand::rng();
-        let deviation = curent_price * deviation_pt as f64 / 100.0;
+        let deviation = current_price * deviation_pt as f64 / 100.0;
 
-        curent_price + rng.random_range(-deviation..deviation)
+        current_price + rng.random_range(-deviation..deviation)
     }
 
-    pub fn stream_all_quotes(mut self, cooldown_ms: u64, s: Sender<Vec<StockQuote>>) {
-        thread::spawn(move || {
+    pub fn stream_all_quotes(
+        mut self,
+        cooldown_ms: u64,
+        s: Sender<Vec<StockQuote>>,
+        cmd_receiver: Receiver<Command>,
+    ) -> JoinHandle<()> {
+        let handle = thread::spawn(move || {
             loop {
+                match cmd_receiver.try_recv() {
+                    Ok(Command::StopSendingAll) => break,
+                    _ => {}
+                }
                 let mut keys: Vec<String> = self.quotes.keys().cloned().collect();
                 keys.sort();
                 let tickers: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
-                if let Ok(quotes) = self.get_quotes(tickers) {
-                    let _ = s.send(quotes);
+                match self.get_quotes(tickers) {
+                    Ok(quotes) => {
+                        if s.send(quotes).is_err() {
+                            log::error!(
+                                "quote generator: quotes channel disconnected, stopping generator"
+                            );
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("quote generator: get_quotes failed: {e:?}");
+                    }
                 }
                 thread::sleep(Duration::from_millis(cooldown_ms));
             }
         });
+        handle
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossbeam::channel::unbounded;
     use std::time::Duration;
 
     #[test]
@@ -154,14 +180,15 @@ mod tests {
     #[test]
     fn test_stream_quotes() {
         let (s, r) = unbounded();
+        let (_, cr) = unbounded();
 
-        let mut generator = QuoteGenerator::new(
+        let generator = QuoteGenerator::new(
             vec!["AAPL", "GOOG"],
             5,
             Duration::from_millis(1000).as_millis() as u64,
         );
 
-        generator.stream_all_quotes(1000, s);
+        generator.stream_all_quotes(1000, s, cr);
 
         let quotes = r.recv().unwrap();
         assert_eq!(quotes.len(), 2);
